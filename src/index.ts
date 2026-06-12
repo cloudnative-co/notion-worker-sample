@@ -15,6 +15,15 @@ const DUE_DATE_PROPERTY = "対応期限";
 // 緊急度ごとのSLA時間。期限計算をAIに任せず、ここで固定する
 const SLA_HOURS: Record<string, number> = { 高: 4, 中: 24, 低: 72 };
 
+// ヘルパー: ページIDの揺れ（URL・ダッシュ付き/なし）を32桁hexに正規化する
+function normalizePageId(input: string): string {
+	const match = input.replace(/-/g, "").match(/[0-9a-f]{32}/i);
+	if (!match) {
+		throw new Error(`ページIDを解釈できません: ${input}`);
+	}
+	return match[0];
+}
+
 // ヘルパー: Notionのプロパティ値が「未入力」かどうかを判定する
 function isEmptyProperty(prop: any): boolean {
 	if (!prop) return true;
@@ -48,11 +57,17 @@ worker.tool("checkRequiredFields", {
 	description:
 		"問い合わせページに必須項目（影響範囲、発生日時、利用端末）が入力されているか確認する。問い合わせのトリアージの最初に使う。",
 	schema: j.object({
-		pageId: j.string().describe("問い合わせ管理DBの対象ページID。"),
+		pageId: j
+			.string()
+			.describe(
+				"問い合わせ管理DBの対象ページID（32文字）。URLが渡された場合もID部分を抽出して使う。",
+			),
 	}),
 	hints: { readOnlyHint: true },
 	execute: async ({ pageId }, { notion }) => {
-		const page = await notion.pages.retrieve({ page_id: pageId });
+		const page = await notion.pages.retrieve({
+			page_id: normalizePageId(pageId),
+		});
 		const properties = (page as any).properties ?? {};
 		const missingFields = REQUIRED_FIELDS.filter((name) =>
 			isEmptyProperty(properties[name]),
@@ -172,7 +187,11 @@ worker.tool("updateTicketStatus", {
 	description:
 		"問い合わせページのStatusをNewからReviewingへ進め、対応期限を書き込む。トリアージ完了時に1回だけ使う。Reviewing以降の遷移には使わない。",
 	schema: j.object({
-		pageId: j.string().describe("問い合わせ管理DBの対象ページID。"),
+		pageId: j
+			.string()
+			.describe(
+				"問い合わせ管理DBの対象ページID（32文字）。URLが渡された場合もID部分を抽出して使う。",
+			),
 		dueDate: j
 			.string()
 			.describe("calculateSlaが返した対応期限。ISO 8601形式。"),
@@ -189,7 +208,8 @@ worker.tool("updateTicketStatus", {
 				dueDate: string;
 		  }
 	> => {
-		const page = await notion.pages.retrieve({ page_id: pageId });
+		const id = normalizePageId(pageId);
+		const page = await notion.pages.retrieve({ page_id: id });
 		const statusProp = (page as any).properties?.[STATUS_PROPERTY];
 
 		// Statusがセレクト型でもステータス型でも動くようにする
@@ -210,7 +230,7 @@ worker.tool("updateTicketStatus", {
 		}
 
 		await notion.pages.update({
-			page_id: pageId,
+			page_id: id,
 			properties: {
 				[STATUS_PROPERTY]:
 					statusProp.type === "status"
